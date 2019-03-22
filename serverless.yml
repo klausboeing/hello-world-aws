@@ -1,0 +1,141 @@
+service: hello-world-aws2
+
+provider:
+  name: aws
+  runtime: java8
+  stage: ${opt:stage, 'development'}
+  region: ${opt:region, 'sa-east-1'}
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - s3:*
+        - dynamodb:*
+      Resource: "*"
+
+package:
+  artifact: 'target/hello-world-aws.jar'
+
+custom:
+  bucketName: ${self:service}-${self:provider.stage}
+  tableNamePrefix: ${self:service}-${self:provider.stage}-v1-
+
+functions:
+  DeployHandler:
+    handler: AfterCopyEventHandler
+    memorySize: 256
+    timeout: 30
+    events:
+#     - stream: <arn:table-name>
+      - stream:
+        type: dynamodb
+        arn:
+          Fn::GetAtt:
+            - ResourcesDynamoDBStream
+            - Arn
+          batchSize: 1
+    environment:
+      BUCKET_NAME: ${self:custom.bucketName}
+      TABLE_NAME_DYNAMO_DB_PREFIX: ${self:custom.tableNamePrefix}
+  UploadHandler:
+    handler: AfterUploadEventHandler
+    memorySize: 256
+    timeout: 30
+    events:
+      - s3:
+        bucket: ${self:custom.bucketName}
+        event: s3:ObjectCreated:*
+    environment:
+      BUCKET_NAME: ${self:custom.bucketName}
+      TABLE_NAME_DYNAMO_DB_PREFIX: ${self:custom.tableNamePrefix}
+  UploadURLRequestHandler:
+    handler: UploadURLRequestEventHandler
+    memorySize: 256
+    timeout: 30
+    events:
+      - http:
+          method: POST
+          path: hello-world-aws/
+#          authorizer:
+#           arn: <arn:aws:lambda>
+#            name: authorizer
+#            identitySource: <header1>,<header2>
+#            type: REQUEST
+    environment:
+      BUCKET_NAME: ${self:custom.bucketName}
+      TABLE_NAME_DYNAMO_DB_PREFIX: ${self:custom.tableNamePrefix}
+  DownloadURLRequestHandler:
+    handler: DownloadURLRequestEventHandler
+    memorySize: 256
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: hello-world-aws/{key}/{sort}/download
+    environment:
+      BUCKET_NAME: ${self:custom.bucketName}
+      TABLE_NAME_DYNAMO_DB_PREFIX: ${self:custom.tableNamePrefix}
+  GetEntityHandler:
+    handler: GetEntityEventHandler
+    memorySize: 256
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: hello-world-aws/
+    environment:
+      BUCKET_NAME: ${self:custom.bucketName}
+      TABLE_NAME_DYNAMO_DB_PREFIX: ${self:custom.tableNamePrefix}
+resources:
+  Resources:
+    UploadBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.bucketName}
+        AccessControl: Private
+        VersioningConfiguration:
+          Status: Enabled
+        CorsConfiguration:
+          CorsRules:
+          - AllowedMethods:
+            - GET
+            - PUT
+            - POST
+            - HEAD
+            AllowedOrigins:
+            - "*"
+            AllowedHeaders:
+            - "*"
+
+    EntityTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tableNamePrefix}entity
+        AttributeDefinitions:
+          -
+            AttributeName: partitionKey
+            AttributeType: S
+          -
+            AttributeName: sortKey
+            AttributeType: S
+          -
+            AttributeName: copy
+            AttributeType: N
+        ProvisionedThroughput:
+            ReadCapacityUnits: 1
+            WriteCapacityUnits: 1
+        KeySchema:
+          - AttributeName: partitionKey
+            KeyType: HASH
+          - AttributeName: sortKey
+            KeyType: RANGE
+        LocalSecondaryIndexes:
+        - IndexName: CopyIndex
+          KeySchema:
+          - AttributeName: partitionKey
+            KeyType: HASH
+          - AttributeName: copy
+            KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        StreamSpecification:
+          StreamViewType: NEW_IMAGE
